@@ -1,2 +1,0 @@
-root@Theotime:/mnt/c/Users/theof/Desktop/IITB/CS631/Projet# cp auto_indexing--1.0.sql /usr/share/postgresql/12/auto_inde
-xing--1.0.sql
