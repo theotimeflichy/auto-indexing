@@ -53,3 +53,5 @@ dkms.conf
 
 
 *.bc
+.idea/*
+remind.txt
