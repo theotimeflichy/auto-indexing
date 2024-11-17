@@ -75,12 +75,12 @@ void removeChar(char *str, char c) {
 }
 
 /**
+ * Add a log in the database.
  *
- *
- * @param query_type
- * @param table_name
- * @param clause_type
- * @param clause
+ * @param query_type the type of query (e.g. INSERT, UPDATE, ...)
+ * @param table_name the table name
+ * @param clause_type the type of clause (e.g. GROUPE BY, ..)
+ * @param clause_name the name of clause (e.g. name, ..)
  */
 static void add_query_log(const char *query_type, const char *table_name, const char *clause_type, const char *clause_name)
 {
@@ -89,13 +89,38 @@ static void add_query_log(const char *query_type, const char *table_name, const 
     appendStringInfo(&buf, "INSERT INTO query_log (query_type, table_name, clause_type, clause_name, log_time) VALUES ('%s', '%s', '%s', '%s', now());",
                      query_type ? query_type : "UNKNOWN",
                      table_name ? table_name : "UNKNOWN",
-                     clause_type ? table_name : "UNKNOWN",
-                     clause_name ? table_name : "UNKNOWN");
+                     clause_type ? clause_type : "UNKNOWN",
+                     clause_name ? clause_name : "UNKNOWN");
 
     if (query_type) {
         SPI_connect();
         SPI_execute(buf.data, false, 0);
         SPI_finish();
+    }
+}
+
+/**
+ * Process query to extract data from the delimiter
+ * (WHERE, GROUP BY, ORDER BY)
+ *
+ * @param query_type the type of query (e.g. INSERT, UPDATE, ...)
+ * @param table_name the table name
+ * @param clause the part of the query
+ * @param delimiter WHERE | GROUP BY | ORDER BY | other is possible
+ */
+static void process_clause(const char *query_type, char *table_name, char *clause, char *delimiter) {
+
+    clause += strlen(delimiter);
+    char *token = strtok((char *)clause, ",");
+    while (token != NULL) {
+        while (*token == ' ') token++;
+        char *end = token;
+        while (*end != ' ' && *end != '=' && *end != '<' && *end != ';' && *end != '>' && *end != '\0') end++;
+        *end = '\0';
+
+        add_query_log(query_type, table_name, delimiter, token);
+
+        token = strtok(NULL, ",");
     }
 }
 
@@ -107,8 +132,10 @@ static void add_query_log(const char *query_type, const char *table_name, const 
 static void log_query(const char *query_text, CmdType type) {
 
     const char *query_type = NULL;
-    const char *where_clause = strstr(query_text, "WHERE");
     const char *table_name = NULL;
+    const char *where_clause = strstr(query_text, "WHERE");
+    const char *order_by_clause = strstr(query_text, "ORDER BY");
+    const char *group_by_clause = strstr(query_text, "GROUP BY");
 
     // We select the query type.
     if (type == CMD_SELECT) {
@@ -158,30 +185,10 @@ static void log_query(const char *query_text, CmdType type) {
         return;
     }
 
-    // For each condition, we add a new tuple.
-    if (where_clause) {
-        where_clause += 6;
+    if (where_clause) process_clause(query_type, table_name, where_clause, "WHERE");
+    if (order_by_clause) process_clause(query_type, table_name, order_by_clause, "ORDER BY");
+    if (group_by_clause) process_clause(query_type, table_name, group_by_clause, "GROUP BY");
 
-        char *condition = strtok((char *)where_clause, "AND");
-
-        while (condition != NULL) {
-            while (*condition == ' ') condition++;
-            char *end = condition;
-            while (*end != ' ' && *end != '=' && *end != '<' && *end != '>' && *end != '\0') end++;
-            *end = '\0';
-
-            // We extract the attribute name.
-            char extract[50];
-            strcpy(extract, condition);
-            char *clause_name = strtok(extract, " ");
-            removeChar(clause_name, '\'');
-            removeChar(clause_name, ';');
-
-            add_query_log(query_type, table_name, "WHERE", clause_name);
-
-            condition = strtok(NULL, "AND");
-        }
-    }
 }
 
 /**
