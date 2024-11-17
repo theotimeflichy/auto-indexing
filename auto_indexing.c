@@ -195,6 +195,9 @@ static void log_query(const char *query_text, CmdType type) {
     if (order_by_clause) process_clause(query_type, table_name, order_by_clause, "ORDER BY");
     if (group_by_clause) process_clause(query_type, table_name, group_by_clause, "GROUP BY");
 
+    if (!where_clause && !order_by_clause && !group_by_clause)
+        add_query_log(query_type, table_name, NULL, NULL);
+
 }
 
 /**
@@ -204,7 +207,7 @@ static void log_query(const char *query_text, CmdType type) {
  * @return
  */
 Datum auto_indexing(PG_FUNCTION_ARGS) {
-    ereport(INFO, (errmsg("Auto Indexing plugin is ready to be use !")));
+    ereport(INFO, (errmsg("Auto Indexing plugin is ready to be use ! AAA 3")));
     PG_RETURN_VOID();
 }
 
@@ -226,7 +229,7 @@ Datum audit(PG_FUNCTION_ARGS) {
                      "SELECT cron.schedule("
                      " 'audit_end_task', "
                      " '%d seconds', "
-                     " $$SELECT audit_end(); DELETE FROM cron.job WHERE jobname = 'audit_end_task';$$ "
+                     " $$DELETE FROM cron.job WHERE jobname = 'audit_end_task'; SELECT audit_end();$$ "
                      ");",
                      time_arg);
 
@@ -279,10 +282,88 @@ void remove_index() {
         }
     }
 
-    // Terminer SPI
     SPI_finish();
 }
 
+/**
+ * This function analyse every tuple (where_clause, table_name) by
+ * computing a freq that will be used to decid if we should add an index.
+ */
+void create_index() {
+
+    StringInfoData buf;
+    initStringInfo(&buf);
+    appendStringInfo(&buf, "SELECT clause_name, table_name, COUNT(*) AS freq, "
+                           "SUM(CASE WHEN clause_type = 'WHERE' THEN 0.5 ELSE 0 END) + "
+                           "SUM(CASE WHEN clause_type = 'GROUP BY' THEN 0.3 ELSE 0 END) + "
+                           "SUM(CASE WHEN clause_type = 'ORDER BY' THEN 0.2 ELSE 0 END) AS weight_score "
+                           "FROM query_log "
+                           "WHERE clause_name != 'NONE' "
+                           "GROUP BY table_name, clause_name "
+                           "ORDER BY weight_score DESC;");
+    SPI_connect();
+    int ret = SPI_execute(buf.data, true, 0);
+
+    if (ret > 0 && SPI_processed > 0) {
+
+        TupleDesc tupdesc = SPI_tuptable->tupdesc;
+        SPITupleTable *tuptable = SPI_tuptable;
+
+        // For each tuple (where_clause, tabe_name)
+        for (int i = 0; i < SPI_processed; i++) {
+
+            HeapTuple tuple = tuptable->vals[i];
+            char *where_clause = SPI_getvalue(tuple, tupdesc, 1);
+            char *table_name = SPI_getvalue(tuple, tupdesc, 2);
+            char *weight_score_str = SPI_getvalue(tuple, tupdesc, 4);
+            double weight_score = atof(weight_score_str);
+
+
+            StringInfoData count_buf;
+            initStringInfo(&count_buf);
+            appendStringInfo(&count_buf, "SELECT COUNT(*) FROM query_log WHERE table_name = %s;", quote_literal_cstr(table_name));
+            SPI_connect();
+            int count_ret = SPI_execute(count_buf.data, true, 0);
+            int table_total_queries = 1;
+            double score = 0;
+            if (count_ret > 0 && SPI_processed > 0) {
+                TupleDesc count_tupdesc = SPI_tuptable->tupdesc;
+                SPITupleTable *count_tuptable = SPI_tuptable;
+                HeapTuple count_tuple = count_tuptable->vals[0];
+
+                char *table_total_queries_str = SPI_getvalue(count_tuple, count_tupdesc, 1);
+                table_total_queries = atoi(table_total_queries_str);
+            }
+
+            if (table_total_queries > 0) {
+                score = weight_score / (double)table_total_queries * 100;  // Division flottante
+            } else {
+                ereport(WARNING, (errmsg("Table has no queries, score is set to 0.")));
+                score = 0;
+            }
+
+            // above of 10% ?
+            if (score >= 10.0) {
+
+                StringInfoData index_buf;
+                initStringInfo(&index_buf);
+                appendStringInfo(&index_buf, "CREATE INDEX ON %s (%s);", table_name, where_clause);
+                SPI_connect();
+                SPI_execute(index_buf.data, false, 0);
+                SPI_finish();
+
+                ereport(INFO, (errmsg("Auto_Indexing : Craeted a new index on table %s for column %s", table_name, where_clause)));
+
+            } else {
+                ereport(INFO, (errmsg("Auto_Indexing : Skipping %s (%s). Score : %f.", table_name, where_clause, score)));
+            }
+
+            SPI_finish();
+        }
+    }
+
+    SPI_finish();
+}
 
 
 /**
@@ -300,15 +381,23 @@ Datum audit_end(PG_FUNCTION_ARGS) {
     ereport(INFO, (errmsg("Auto_Indexing : Ending analyzing to remove index.")));
 
     ereport(INFO, (errmsg("Auto_Indexing : Starting analyzing to add index.")));
+    create_index();
     ereport(INFO, (errmsg("Auto_Indexing : Ending analyzing to add index.")));
 
+    // We delete the cron task
+    StringInfoData buf_cron;
+    initStringInfo(&buf_cron);
+    appendStringInfo(&buf_cron, "DELETE FROM cron.job WHERE jobname = 'audit_end_task';");
+    SPI_connect();
+    SPI_execute(buf_cron.data, false, 0);
+    SPI_finish();
 
     // We delete all logs.
-    StringInfoData buf;
-    initStringInfo(&buf);
-    appendStringInfo(&buf, "DELETE FROM query_log;");
+    StringInfoData buf_query;
+    initStringInfo(&buf_query);
+    appendStringInfo(&buf_query, "DELETE FROM query_log;");
     SPI_connect();
-    SPI_execute(buf.data, false, 0);
+    //SPI_execute(buf_query.data, false, 0);
     SPI_finish();
 
     PG_RETURN_VOID();
