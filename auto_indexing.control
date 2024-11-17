@@ -2,4 +2,3 @@ comment = 'Auto Indexing extension for Postgresql. Project for IIT Bombay, CS631
 default_version = '1.0'
 relocatable = true
 module_pathname = '$libdir/auto_indexing'
-

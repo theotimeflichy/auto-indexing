@@ -1,5 +1,5 @@
 CREATE FUNCTION auto_indexing() RETURNS void
-AS 'MODULE_PATHNAME', 'auto_indexing'
+AS 'auto_indexing'
     LANGUAGE C STRICT;
 
 SELECT auto_indexing();
