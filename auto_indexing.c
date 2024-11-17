@@ -10,6 +10,9 @@
 #include "pthread.h"
 #include <time.h>
 #include <unistd.h>
+#include "executor/spi.h"
+#include "commands/defrem.h"
+#include "utils/elog.h"
 
 PG_MODULE_MAGIC;
 
@@ -19,6 +22,7 @@ void _PG_init(void);
 void _PG_fini(void);
 static void startExec(QueryDesc *queryDesc, int eflags);
 static void log_query(const char *query_text, CmdType type);
+int recording = 0;
 
 /**
  * Function called to the init of plugin.
@@ -211,6 +215,9 @@ Datum auto_indexing(PG_FUNCTION_ARGS) {
  * @return NULL
  */
 Datum audit(PG_FUNCTION_ARGS) {
+
+    recording = 1;
+
     int time_arg = PG_GETARG_INT32(0);
 
     StringInfoData buf;
@@ -230,6 +237,53 @@ Datum audit(PG_FUNCTION_ARGS) {
     PG_RETURN_VOID();
 }
 
+/**
+ * This function is calculating and removing every unuseful index.
+ *
+ * Is called an unuseful index every which respect the following :
+ *  - a non unique index
+ *  - the index is used in less than 10% of requests.
+ */
+void remove_index() {
+
+    StringInfoData buf;
+    initStringInfo(&buf);
+    appendStringInfo(&buf,
+                     "SELECT i.schemaname, i.relname, i.indexrelname "
+                     "FROM pg_stat_user_indexes i "
+                     "JOIN pg_stat_user_tables t ON i.relname = t.relname AND i.schemaname = t.schemaname "
+                     "JOIN pg_index x ON i.indexrelid = x.indexrelid "
+                     "WHERE x.indisunique = false "
+                     "AND (i.idx_scan::float / NULLIF(t.seq_scan + t.idx_scan, 0)) < 0.1;"
+    );
+    SPI_connect();
+    SPI_execute(buf.data, true, 0);
+
+    for (int i = 0; i < SPI_processed; i++) {
+        HeapTuple tuple = SPI_tuptable->vals[i];
+        TupleDesc tupdesc = SPI_tuptable->tupdesc;
+
+        char *schemaname = SPI_getvalue(tuple, tupdesc, 1);
+        char *tablename = SPI_getvalue(tuple, tupdesc, 2);
+        char *indexname = SPI_getvalue(tuple, tupdesc, 3);
+
+        StringInfoData drop_cmd;
+        initStringInfo(&drop_cmd);
+        appendStringInfo(&drop_cmd, "DROP INDEX IF EXISTS %s.%s;", schemaname, indexname);
+
+        int drop_ret = SPI_execute(drop_cmd.data, false, 0);
+        if (drop_ret != SPI_OK_UTILITY) {
+            ereport(WARNING, (errmsg("Failed to drop index : %s.%s", schemaname, indexname)));
+        } else {
+            ereport(INFO, (errmsg("Dropped index : %s.%s", schemaname, indexname)));
+        }
+    }
+
+    // Terminer SPI
+    SPI_finish();
+}
+
+
 
 /**
  * The function is launched at the end an audit.
@@ -239,12 +293,23 @@ Datum audit(PG_FUNCTION_ARGS) {
  */
 Datum audit_end(PG_FUNCTION_ARGS) {
 
-    // TODO : delete all logs after analyse
+    recording = 0;
 
-    ereport(INFO, (errmsg("start")));
+    ereport(INFO, (errmsg("Auto_Indexing : Starting analyzing to remove index.")));
+    remove_index();
+    ereport(INFO, (errmsg("Auto_Indexing : Ending analyzing to remove index.")));
+
+    ereport(INFO, (errmsg("Auto_Indexing : Starting analyzing to add index.")));
+    ereport(INFO, (errmsg("Auto_Indexing : Ending analyzing to add index.")));
 
 
-    ereport(INFO, (errmsg("end")));
+    // We delete all logs.
+    StringInfoData buf;
+    initStringInfo(&buf);
+    appendStringInfo(&buf, "DELETE FROM query_log;");
+    SPI_connect();
+    SPI_execute(buf.data, false, 0);
+    SPI_finish();
 
     PG_RETURN_VOID();
 }
