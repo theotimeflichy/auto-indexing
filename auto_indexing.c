@@ -137,6 +137,8 @@ static void process_clause(const char *query_type, char *table_name, char *claus
  */
 static void log_query(const char *query_text, CmdType type) {
 
+    if (recording == 0) return;
+
     const char *query_type = NULL;
     const char *table_name = NULL;
     const char *where_clause = strstr(query_text, "WHERE");
