@@ -75,6 +75,31 @@ void removeChar(char *str, char c) {
 }
 
 /**
+ *
+ *
+ * @param query_type
+ * @param table_name
+ * @param clause_type
+ * @param clause
+ */
+static void add_query_log(const char *query_type, const char *table_name, const char *clause_type, const char *clause_name)
+{
+    StringInfoData buf;
+    initStringInfo(&buf);
+    appendStringInfo(&buf, "INSERT INTO query_log (query_type, table_name, clause_type, clause_name, log_time) VALUES ('%s', '%s', '%s', '%s', now());",
+                     query_type ? query_type : "UNKNOWN",
+                     table_name ? table_name : "UNKNOWN",
+                     clause_type ? table_name : "UNKNOWN",
+                     clause_name ? table_name : "UNKNOWN");
+
+    if (query_type) {
+        SPI_connect();
+        SPI_execute(buf.data, false, 0);
+        SPI_finish();
+    }
+}
+
+/**
  * This function is called whenever a new query is executed.
  *
  * @param query_text the query.
@@ -86,16 +111,16 @@ static void log_query(const char *query_text, CmdType type) {
     const char *table_name = NULL;
 
     // We select the query type.
-    if (type = CMD_SELECT) {
+    if (type == CMD_SELECT) {
         query_type = "SELECT";
         table_name = strstr(query_text, "FROM");
-    } else if (type = CMD_UPDATE) {
+    } else if (type == CMD_UPDATE) {
         query_type = "UPDATE";
         table_name = query_text + 7;
-    } else if (type = CMD_DELETE) {
+    } else if (type == CMD_DELETE) {
         query_type = "DELETE";
         table_name = strstr(query_text, "FROM");
-    } else if (type = CMD_INSERT) {
+    } else if (type == CMD_INSERT) {
         query_type = "INSERT";
         table_name = strstr(query_text, "INTO");
     } else {
@@ -148,22 +173,11 @@ static void log_query(const char *query_text, CmdType type) {
             // We extract the attribute name.
             char extract[50];
             strcpy(extract, condition);
-            char *attribut_name = strtok(extract, " ");
-            removeChar(attribut_name, '\'');
-            removeChar(attribut_name, ';');
+            char *clause_name = strtok(extract, " ");
+            removeChar(clause_name, '\'');
+            removeChar(clause_name, ';');
 
-            StringInfoData buf;
-            initStringInfo(&buf);
-            appendStringInfo(&buf, "INSERT INTO query_log (query_type, table_name, where_clause, log_time) VALUES ('%s', '%s', '%s', now());",
-                             query_type ? query_type : "UNKNOWN",
-                             table_name ? table_name : "UNKNOWN",
-                             attribut_name);
-
-            if (query_type) {
-                SPI_connect();
-                SPI_execute(buf.data, false, 0);
-                SPI_finish();
-            }
+            add_query_log(query_type, table_name, "WHERE", clause_name);
 
             condition = strtok(NULL, "AND");
         }
