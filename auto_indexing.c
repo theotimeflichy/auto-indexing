@@ -7,6 +7,9 @@
 #include "commands/trigger.h"
 #include "utils/builtins.h"
 #include "string.h"
+#include "pthread.h"
+#include <time.h>
+#include <unistd.h>
 
 PG_MODULE_MAGIC;
 
@@ -82,8 +85,7 @@ void removeChar(char *str, char c) {
  * @param clause_type the type of clause (e.g. GROUPE BY, ..)
  * @param clause_name the name of clause (e.g. name, ..)
  */
-static void add_query_log(const char *query_type, const char *table_name, const char *clause_type, const char *clause_name)
-{
+static void add_query_log(const char *query_type, const char *table_name, const char *clause_type, const char *clause_name) {
     StringInfoData buf;
     initStringInfo(&buf);
     appendStringInfo(&buf, "INSERT INTO query_log (query_type, table_name, clause_type, clause_name, log_time) VALUES ('%s', '%s', '%s', '%s', now());",
@@ -197,10 +199,56 @@ static void log_query(const char *query_text, CmdType type) {
  * @param fcinfo
  * @return
  */
-Datum auto_indexing(PG_FUNCTION_ARGS)
-{
+Datum auto_indexing(PG_FUNCTION_ARGS) {
     ereport(INFO, (errmsg("Auto Indexing plugin is ready to be use !")));
     PG_RETURN_VOID();
 }
 
+/**
+ * Start an audit for a precise amount of time.
+ *
+ * @param fcinfo time in second that the audit will last.
+ * @return NULL
+ */
+Datum audit(PG_FUNCTION_ARGS) {
+    int time_arg = PG_GETARG_INT32(0);
+
+    StringInfoData buf;
+    initStringInfo(&buf);
+    appendStringInfo(&buf,
+                     "SELECT cron.schedule("
+                     " 'audit_end_task', "
+                     " '%d seconds', "
+                     " $$SELECT audit_end(); DELETE FROM cron.job WHERE jobname = 'audit_end_task';$$ "
+                     ");",
+                     time_arg);
+
+    SPI_connect();
+    SPI_execute(buf.data, false, 0);
+    SPI_finish();
+
+    PG_RETURN_VOID();
+}
+
+
+/**
+ * The function is launched at the end an audit.
+ *
+ * @param arg NULL
+ * @return NULL
+ */
+Datum audit_end(PG_FUNCTION_ARGS) {
+
+    // TODO : delete all logs after analyse
+
+    ereport(INFO, (errmsg("start")));
+
+
+    ereport(INFO, (errmsg("end")));
+
+    PG_RETURN_VOID();
+}
+
 PG_FUNCTION_INFO_V1(auto_indexing);
+PG_FUNCTION_INFO_V1(audit);
+PG_FUNCTION_INFO_V1(audit_end);
