@@ -13,6 +13,7 @@
 #include "executor/spi.h"
 #include "commands/defrem.h"
 #include "utils/elog.h"
+#include "utils/palloc.h"
 
 PG_MODULE_MAGIC;
 
@@ -114,10 +115,11 @@ static void add_query_log(const char *query_type, const char *table_name, const 
  * @param clause the part of the query
  * @param delimiter WHERE | GROUP BY | ORDER BY | other is possible
  */
-static void process_clause(const char *query_type, char *table_name, char *clause, char *delimiter) {
+static void process_clause(const char *query_type, const char *table_name, const char *clause, const char *delimiter) {
 
     clause += strlen(delimiter);
-    char *token = strtok((char *)clause, ",");
+    char *clause_copy = pstrdup(clause);
+    char *token = strtok(clause_copy, ",");
     while (token != NULL) {
         while (*token == ' ') token++;
         char *end = token;
@@ -128,6 +130,7 @@ static void process_clause(const char *query_type, char *table_name, char *claus
 
         token = strtok(NULL, ",");
     }
+    pfree(clause_copy);
 }
 
 /**
@@ -164,7 +167,15 @@ static void log_query(const char *query_text, CmdType type) {
 
     // We get the name of the table.
     if (table_name) {
-        table_name += (strncasecmp(query_type, "INSERT", 6) == 0) ? 5 : 5;
+        size_t skip_len = 0;
+        if (type == CMD_SELECT || type == CMD_DELETE)
+            skip_len = 4; /* length of FROM */
+        else if (type == CMD_INSERT)
+            skip_len = 4; /* length of INTO */
+        else if (type == CMD_UPDATE)
+            skip_len = 0; /* already positioned after UPDATE keyword */
+
+        table_name += skip_len;
         while (*table_name == ' ') table_name++;
         char table_name_buf[256];
         int i = 0;
